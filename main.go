@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -36,6 +37,36 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("Hits: 0"))
 }
 
+func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Body string `json:"body"`
+	}
+	type errorResponse struct {
+		Error string `json:"error"`
+	}
+	type validResponse struct {
+		Valid bool `json:"valid"`
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	var req request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(errorResponse{Error: "Something went wrong"})
+		return
+	}
+
+	if len(req.Body) > 140 {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(errorResponse{Error: "Chirp is too long"})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(validResponse{Valid: true})
+}
+
 func main() {
 	apiCfg := &apiConfig{}
 
@@ -45,6 +76,7 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(http.StatusText(http.StatusOK)))
 	})
+	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 
