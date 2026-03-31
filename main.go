@@ -105,6 +105,39 @@ func cleanChirp(body string) string {
 	return strings.Join(words, " ")
 }
 
+func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
+	type chirpResponse struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Body      string `json:"body"`
+		UserID    string `json:"user_id"`
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	chirps, err := cfg.dbQueries.GetChirps(r.Context())
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Could not retrieve chirps"})
+		return
+	}
+
+	result := make([]chirpResponse, len(chirps))
+	for i, c := range chirps {
+		result[i] = chirpResponse{
+			ID:        c.ID.String(),
+			CreatedAt: c.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			UpdatedAt: c.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+			Body:      c.Body,
+			UserID:    c.UserID.String(),
+		}
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(result)
+}
+
 func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
 	type request struct {
 		Body   string `json:"body"`
@@ -185,6 +218,7 @@ func main() {
 		_, _ = w.Write([]byte(http.StatusText(http.StatusOK)))
 	})
 	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
+	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
