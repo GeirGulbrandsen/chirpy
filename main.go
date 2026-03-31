@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"github.com/geirgulbrandsen/chirpy/internal/auth"
 	"github.com/geirgulbrandsen/chirpy/internal/database"
 	"github.com/google/uuid"
 	"github.com/joho/godotenv"
@@ -56,7 +57,8 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
 	type request struct {
-		Email string `json:"email"`
+		Password string `json:"password"`
+		Email    string `json:"email"`
 	}
 	type userResponse struct {
 		ID        string `json:"id"`
@@ -74,7 +76,17 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	user, err := cfg.dbQueries.CreateUser(r.Context(), req.Email)
+	hashed, err := auth.HashPassword(req.Password)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Could not hash password"})
+		return
+	}
+
+	user, err := cfg.dbQueries.CreateUser(r.Context(), database.CreateUserParams{
+		Email:          req.Email,
+		HashedPassword: hashed,
+	})
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Could not create user"})
@@ -82,6 +94,50 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	}
 
 	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(userResponse{
+		ID:        user.ID.String(),
+		CreatedAt: user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt: user.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		Email:     user.Email,
+	})
+}
+
+func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+	type userResponse struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Email     string `json:"email"`
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	var req request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Incorrect email or password"})
+		return
+	}
+
+	user, err := cfg.dbQueries.GetUserByEmail(r.Context(), req.Email)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Incorrect email or password"})
+		return
+	}
+
+	match, err := auth.CheckPasswordHash(req.Password, user.HashedPassword)
+	if err != nil || !match {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Incorrect email or password"})
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(userResponse{
 		ID:        user.ID.String(),
 		CreatedAt: user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
@@ -251,6 +307,7 @@ func main() {
 		_, _ = w.Write([]byte(http.StatusText(http.StatusOK)))
 	})
 	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
+	mux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirp)
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
