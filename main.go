@@ -18,6 +18,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
+	platform       string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -39,10 +40,53 @@ func (cfg *apiConfig) handlerMetrics(w http.ResponseWriter, r *http.Request) {
 }
 
 func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
-	cfg.fileserverHits.Store(0)
+	if cfg.platform != "dev" {
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+	if err := cfg.dbQueries.DeleteAllUsers(r.Context()); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write([]byte("Hits: 0"))
+	_, _ = w.Write([]byte("All users deleted."))
+}
+
+func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Email string `json:"email"`
+	}
+	type userResponse struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Email     string `json:"email"`
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	var req request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Something went wrong"})
+		return
+	}
+
+	user, err := cfg.dbQueries.CreateUser(r.Context(), req.Email)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Could not create user"})
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(userResponse{
+		ID:        user.ID.String(),
+		CreatedAt: user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt: user.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		Email:     user.Email,
+	})
 }
 
 func cleanChirp(body string) string {
@@ -105,6 +149,7 @@ func main() {
 
 	apiCfg := &apiConfig{
 		dbQueries: dbQueries,
+		platform:  os.Getenv("PLATFORM"),
 	}
 
 	mux := http.NewServeMux()
@@ -113,6 +158,7 @@ func main() {
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte(http.StatusText(http.StatusOK)))
 	})
+	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
 	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
