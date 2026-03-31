@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 
 	"github.com/geirgulbrandsen/chirpy/internal/database"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
 	_ "github.com/lib/pq"
 )
@@ -104,15 +105,17 @@ func cleanChirp(body string) string {
 	return strings.Join(words, " ")
 }
 
-func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
+func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
 	type request struct {
-		Body string `json:"body"`
+		Body   string `json:"body"`
+		UserID string `json:"user_id"`
 	}
-	type errorResponse struct {
-		Error string `json:"error"`
-	}
-	type cleanedResponse struct {
-		CleanedBody string `json:"cleaned_body"`
+	type chirpResponse struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Body      string `json:"body"`
+		UserID    string `json:"user_id"`
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -120,18 +123,41 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	var req request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(errorResponse{Error: "Something went wrong"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Something went wrong"})
 		return
 	}
 
 	if len(req.Body) > 140 {
 		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(errorResponse{Error: "Chirp is too long"})
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Chirp is too long"})
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(cleanedResponse{CleanedBody: cleanChirp(req.Body)})
+	userID, err := uuid.Parse(req.UserID)
+	if err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid user_id"})
+		return
+	}
+
+	chirp, err := cfg.dbQueries.CreateChirp(r.Context(), database.CreateChirpParams{
+		Body:   cleanChirp(req.Body),
+		UserID: userID,
+	})
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Could not create chirp"})
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	_ = json.NewEncoder(w).Encode(chirpResponse{
+		ID:        chirp.ID.String(),
+		CreatedAt: chirp.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt: chirp.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		Body:      chirp.Body,
+		UserID:    chirp.UserID.String(),
+	})
 }
 
 func main() {
@@ -159,7 +185,7 @@ func main() {
 		_, _ = w.Write([]byte(http.StatusText(http.StatusOK)))
 	})
 	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
-	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
 
