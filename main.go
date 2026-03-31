@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 )
 
@@ -37,6 +38,21 @@ func (cfg *apiConfig) handlerReset(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("Hits: 0"))
 }
 
+func cleanChirp(body string) string {
+	profane := map[string]bool{
+		"kerfuffle": true,
+		"sharbert":  true,
+		"fornax":    true,
+	}
+	words := strings.Split(body, " ")
+	for i, w := range words {
+		if profane[strings.ToLower(w)] {
+			words[i] = "****"
+		}
+	}
+	return strings.Join(words, " ")
+}
+
 func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	type request struct {
 		Body string `json:"body"`
@@ -44,8 +60,8 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	type errorResponse struct {
 		Error string `json:"error"`
 	}
-	type validResponse struct {
-		Valid bool `json:"valid"`
+	type cleanedResponse struct {
+		CleanedBody string `json:"cleaned_body"`
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -64,7 +80,7 @@ func handlerValidateChirp(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(validResponse{Valid: true})
+	_ = json.NewEncoder(w).Encode(cleanedResponse{CleanedBody: cleanChirp(req.Body)})
 }
 
 func main() {
