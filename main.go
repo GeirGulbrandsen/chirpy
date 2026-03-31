@@ -105,6 +105,39 @@ func cleanChirp(body string) string {
 	return strings.Join(words, " ")
 }
 
+func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
+	type chirpResponse struct {
+		ID        string `json:"id"`
+		CreatedAt string `json:"created_at"`
+		UpdatedAt string `json:"updated_at"`
+		Body      string `json:"body"`
+		UserID    string `json:"user_id"`
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	chirpID, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	chirp, err := cfg.dbQueries.GetChirp(r.Context(), chirpID)
+	if err != nil {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(chirpResponse{
+		ID:        chirp.ID.String(),
+		CreatedAt: chirp.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt: chirp.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		Body:      chirp.Body,
+		UserID:    chirp.UserID.String(),
+	})
+}
+
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 	type chirpResponse struct {
 		ID        string `json:"id"`
@@ -219,6 +252,7 @@ func main() {
 	})
 	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirp)
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
 	mux.HandleFunc("GET /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("POST /admin/reset", apiCfg.handlerReset)
