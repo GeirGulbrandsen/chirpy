@@ -9,6 +9,7 @@ import (
 	"os"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/geirgulbrandsen/chirpy/internal/auth"
 	"github.com/geirgulbrandsen/chirpy/internal/database"
@@ -21,6 +22,7 @@ type apiConfig struct {
 	fileserverHits atomic.Int32
 	dbQueries      *database.Queries
 	platform       string
+	jwtSecret      string
 }
 
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
@@ -104,14 +106,16 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type request struct {
-		Password string `json:"password"`
-		Email    string `json:"email"`
+		Password      string `json:"password"`
+		Email         string `json:"email"`
+		ExpiresInSecs int    `json:"expires_in_seconds"`
 	}
 	type userResponse struct {
 		ID        string `json:"id"`
 		CreatedAt string `json:"created_at"`
 		UpdatedAt string `json:"updated_at"`
 		Email     string `json:"email"`
+		Token     string `json:"token"`
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -137,12 +141,31 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Determine expiration time
+	expiresIn := time.Hour // default 1 hour
+	if req.ExpiresInSecs > 0 {
+		reqExpiry := time.Duration(req.ExpiresInSecs) * time.Second
+		if reqExpiry < expiresIn {
+			expiresIn = reqExpiry
+		}
+		// If reqExpiry > 1 hour, expiresIn stays at 1 hour
+	}
+
+	// Generate JWT
+	token, err := auth.MakeJWT(user.ID, cfg.jwtSecret, expiresIn)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Could not generate token"})
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(userResponse{
 		ID:        user.ID.String(),
 		CreatedAt: user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		UpdatedAt: user.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		Email:     user.Email,
+		Token:     token,
 	})
 }
 
@@ -229,8 +252,7 @@ func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
 
 func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request) {
 	type request struct {
-		Body   string `json:"body"`
-		UserID string `json:"user_id"`
+		Body string `json:"body"`
 	}
 	type chirpResponse struct {
 		ID        string `json:"id"`
@@ -242,6 +264,21 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("Content-Type", "application/json")
 
+	// Extract and validate JWT
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Unauthorized"})
+		return
+	}
+
 	var req request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -252,13 +289,6 @@ func (cfg *apiConfig) handlerCreateChirp(w http.ResponseWriter, r *http.Request)
 	if len(req.Body) > 140 {
 		w.WriteHeader(http.StatusBadRequest)
 		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Chirp is too long"})
-		return
-	}
-
-	userID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Invalid user_id"})
 		return
 	}
 
@@ -298,6 +328,7 @@ func main() {
 	apiCfg := &apiConfig{
 		dbQueries: dbQueries,
 		platform:  os.Getenv("PLATFORM"),
+		jwtSecret: os.Getenv("JWT_SECRET"),
 	}
 
 	mux := http.NewServeMux()
