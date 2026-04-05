@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"net/http"
 	"strings"
@@ -19,6 +21,16 @@ func HashPassword(password string) (string, error) {
 // CheckPasswordHash compares a plaintext password against an argon2id hash.
 func CheckPasswordHash(password, hash string) (bool, error) {
 	return argon2id.ComparePasswordAndHash(password, hash)
+}
+
+// MakeRefreshToken creates a random 256-bit refresh token encoded as hex.
+func MakeRefreshToken() string {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		panic(err)
+	}
+
+	return hex.EncodeToString(buf)
 }
 
 // MakeJWT creates and signs an HS256 access token for a user.

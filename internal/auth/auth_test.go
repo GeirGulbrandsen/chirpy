@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/hex"
 	"net/http"
 	"testing"
 	"time"
@@ -46,6 +47,21 @@ func TestCheckPasswordHash_invalid(t *testing.T) {
 	}
 	if match {
 		t.Fatal("expected passwords not to match but they did")
+	}
+}
+
+func TestMakeRefreshToken(t *testing.T) {
+	token := MakeRefreshToken()
+	if len(token) != 64 {
+		t.Fatalf("expected refresh token length 64, got %d", len(token))
+	}
+	if _, err := hex.DecodeString(token); err != nil {
+		t.Fatalf("expected hex-encoded token, got error: %v", err)
+	}
+
+	otherToken := MakeRefreshToken()
+	if token == otherToken {
+		t.Fatal("expected refresh tokens to differ")
 	}
 }
 
