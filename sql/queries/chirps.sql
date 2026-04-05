@@ -14,3 +14,6 @@ VALUES (
     $2
 )
 RETURNING *;
+
+-- name: DeleteChirp :exec
+DELETE FROM chirps WHERE id = $1;

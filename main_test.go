@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"database/sql"
 	"database/sql/driver"
 	"encoding/json"
 	"net/http"
@@ -145,5 +146,159 @@ func TestHandlerUpdateUser_MalformedBearerToken(t *testing.T) {
 
 	if err := mock.ExpectationsWereMet(); err != nil {
 		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestHandlerDeleteChirp_Success(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	config := &apiConfig{
+		dbQueries: database.New(db),
+		jwtSecret: "test-secret",
+	}
+
+	userID := uuid.New()
+	chirpID := uuid.New()
+	token, err := auth.MakeJWT(userID, config.jwtSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("MakeJWT returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/chirps/"+chirpID.String(), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.SetPathValue("chirpID", chirpID.String())
+	resp := httptest.NewRecorder()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`-- name: GetChirp :one
+SELECT id, created_at, updated_at, body, user_id FROM chirps WHERE id = $1
+`)).
+		WithArgs(chirpID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
+			AddRow(chirpID, time.Now().UTC(), time.Now().UTC(), "hello", userID))
+	mock.ExpectExec(regexp.QuoteMeta(`-- name: DeleteChirp :exec
+DELETE FROM chirps WHERE id = $1
+`)).
+		WithArgs(chirpID).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	config.handlerDeleteChirp(resp, req)
+
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", http.StatusNoContent, resp.Code)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestHandlerDeleteChirp_ForbiddenForNonAuthor(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	config := &apiConfig{
+		dbQueries: database.New(db),
+		jwtSecret: "test-secret",
+	}
+
+	requestUserID := uuid.New()
+	authorID := uuid.New()
+	chirpID := uuid.New()
+	token, err := auth.MakeJWT(requestUserID, config.jwtSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("MakeJWT returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/chirps/"+chirpID.String(), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.SetPathValue("chirpID", chirpID.String())
+	resp := httptest.NewRecorder()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`-- name: GetChirp :one
+SELECT id, created_at, updated_at, body, user_id FROM chirps WHERE id = $1
+`)).
+		WithArgs(chirpID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "body", "user_id"}).
+			AddRow(chirpID, time.Now().UTC(), time.Now().UTC(), "hello", authorID))
+
+	config.handlerDeleteChirp(resp, req)
+
+	if resp.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, resp.Code)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestHandlerDeleteChirp_NotFound(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	config := &apiConfig{
+		dbQueries: database.New(db),
+		jwtSecret: "test-secret",
+	}
+
+	userID := uuid.New()
+	chirpID := uuid.New()
+	token, err := auth.MakeJWT(userID, config.jwtSecret, time.Hour)
+	if err != nil {
+		t.Fatalf("MakeJWT returned error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/chirps/"+chirpID.String(), nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.SetPathValue("chirpID", chirpID.String())
+	resp := httptest.NewRecorder()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`-- name: GetChirp :one
+SELECT id, created_at, updated_at, body, user_id FROM chirps WHERE id = $1
+`)).
+		WithArgs(chirpID).
+		WillReturnError(sql.ErrNoRows)
+
+	config.handlerDeleteChirp(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, resp.Code)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestHandlerDeleteChirp_MissingBearerToken(t *testing.T) {
+	db, _, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	config := &apiConfig{
+		dbQueries: database.New(db),
+		jwtSecret: "test-secret",
+	}
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/chirps/"+uuid.New().String(), nil)
+	req.SetPathValue("chirpID", uuid.New().String())
+	resp := httptest.NewRecorder()
+
+	config.handlerDeleteChirp(resp, req)
+
+	if resp.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, resp.Code)
 	}
 }
