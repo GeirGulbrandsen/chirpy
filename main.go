@@ -25,6 +25,23 @@ type apiConfig struct {
 	jwtSecret      string
 }
 
+type userResponse struct {
+	ID        string `json:"id"`
+	CreatedAt string `json:"created_at"`
+	UpdatedAt string `json:"updated_at"`
+	Email     string `json:"email"`
+}
+
+func respondWithUser(w http.ResponseWriter, statusCode int, user database.User) {
+	w.WriteHeader(statusCode)
+	_ = json.NewEncoder(w).Encode(userResponse{
+		ID:        user.ID.String(),
+		CreatedAt: user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		UpdatedAt: user.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
+		Email:     user.Email,
+	})
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
@@ -62,12 +79,6 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		Password string `json:"password"`
 		Email    string `json:"email"`
 	}
-	type userResponse struct {
-		ID        string `json:"id"`
-		CreatedAt string `json:"created_at"`
-		UpdatedAt string `json:"updated_at"`
-		Email     string `json:"email"`
-	}
 
 	w.Header().Set("Content-Type", "application/json")
 
@@ -95,13 +106,7 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	w.WriteHeader(http.StatusCreated)
-	_ = json.NewEncoder(w).Encode(userResponse{
-		ID:        user.ID.String(),
-		CreatedAt: user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		UpdatedAt: user.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
-		Email:     user.Email,
-	})
+	respondWithUser(w, http.StatusCreated, user)
 }
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
@@ -109,7 +114,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		Password string `json:"password"`
 		Email    string `json:"email"`
 	}
-	type userResponse struct {
+	type loginResponse struct {
 		ID           string `json:"id"`
 		CreatedAt    string `json:"created_at"`
 		UpdatedAt    string `json:"updated_at"`
@@ -161,7 +166,7 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(userResponse{
+	_ = json.NewEncoder(w).Encode(loginResponse{
 		ID:           user.ID.String(),
 		CreatedAt:    user.CreatedAt.UTC().Format("2006-01-02T15:04:05Z"),
 		UpdatedAt:    user.UpdatedAt.UTC().Format("2006-01-02T15:04:05Z"),
@@ -169,6 +174,58 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		Token:        token,
 		RefreshToken: refreshToken,
 	})
+}
+
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
+	type request struct {
+		Password string `json:"password"`
+		Email    string `json:"email"`
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+
+	token, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(token, cfg.jwtSecret)
+	if err != nil {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+
+	var req request
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Something went wrong"})
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(req.Password)
+	if err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Could not hash password"})
+		return
+	}
+
+	user, err := cfg.dbQueries.UpdateUserCredentials(r.Context(), database.UpdateUserCredentialsParams{
+		ID:             userID,
+		Email:          req.Email,
+		HashedPassword: hashedPassword,
+	})
+	if err != nil {
+		if err == sql.ErrNoRows {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]string{"error": "Could not update user"})
+		return
+	}
+
+	respondWithUser(w, http.StatusOK, user)
 }
 
 func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
@@ -384,6 +441,7 @@ func main() {
 		_, _ = w.Write([]byte(http.StatusText(http.StatusOK)))
 	})
 	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
+	mux.HandleFunc("PUT /api/users", apiCfg.handlerUpdateUser)
 	mux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
 	mux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
 	mux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
