@@ -64,11 +64,11 @@ SET email = $2,
     hashed_password = $3,
     updated_at = NOW()
 WHERE id = $1
-RETURNING id, created_at, updated_at, email, hashed_password
+	RETURNING id, created_at, updated_at, email, hashed_password, is_chirpy_red
 `)).
 		WithArgs(userID, "updated@example.com", hashedPasswordArg{plaintext: "new-password"}).
-		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password"}).
-			AddRow(userID, createdAt, updatedAt, "updated@example.com", "stored-hash"))
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password", "is_chirpy_red"}).
+			AddRow(userID, createdAt, updatedAt, "updated@example.com", "stored-hash", false))
 
 	config.handlerUpdateUser(resp, req)
 
@@ -86,6 +86,9 @@ RETURNING id, created_at, updated_at, email, hashed_password
 	}
 	if got.Email != "updated@example.com" {
 		t.Fatalf("expected email updated@example.com, got %s", got.Email)
+	}
+	if got.IsChirpyRed {
+		t.Fatal("expected is_chirpy_red to be false")
 	}
 	if got.CreatedAt != createdAt.Format("2006-01-02T15:04:05Z") {
 		t.Fatalf("expected created_at %s, got %s", createdAt.Format("2006-01-02T15:04:05Z"), got.CreatedAt)
@@ -300,5 +303,97 @@ func TestHandlerDeleteChirp_MissingBearerToken(t *testing.T) {
 
 	if resp.Code != http.StatusUnauthorized {
 		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, resp.Code)
+	}
+}
+
+func TestHandlerPolkaWebhooks_IgnoresUnknownEvent(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	config := &apiConfig{dbQueries: database.New(db)}
+	req := httptest.NewRequest(http.MethodPost, "/api/polka/webhooks", bytes.NewReader([]byte(`{"event":"invoice.paid","data":{"user_id":"`+uuid.New().String()+`"}}`)))
+	resp := httptest.NewRecorder()
+
+	config.handlerPolkaWebhooks(resp, req)
+
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", http.StatusNoContent, resp.Code)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestHandlerPolkaWebhooks_UpgradesUser(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	config := &apiConfig{dbQueries: database.New(db)}
+	userID := uuid.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/polka/webhooks", bytes.NewReader([]byte(`{"event":"user.upgraded","data":{"user_id":"`+userID.String()+`"}}`)))
+	resp := httptest.NewRecorder()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`-- name: UpgradeUserToChirpyRed :one
+UPDATE users
+SET is_chirpy_red = TRUE,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, created_at, updated_at, email, hashed_password, is_chirpy_red
+`)).
+		WithArgs(userID).
+		WillReturnRows(sqlmock.NewRows([]string{"id", "created_at", "updated_at", "email", "hashed_password", "is_chirpy_red"}).
+			AddRow(userID, time.Now().UTC(), time.Now().UTC(), "red@example.com", "hash", true))
+
+	config.handlerPolkaWebhooks(resp, req)
+
+	if resp.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", http.StatusNoContent, resp.Code)
+	}
+	if resp.Body.Len() != 0 {
+		t.Fatalf("expected empty response body, got %q", resp.Body.String())
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
+	}
+}
+
+func TestHandlerPolkaWebhooks_UserNotFound(t *testing.T) {
+	db, mock, err := sqlmock.New()
+	if err != nil {
+		t.Fatalf("sqlmock.New returned error: %v", err)
+	}
+	defer db.Close()
+
+	config := &apiConfig{dbQueries: database.New(db)}
+	userID := uuid.New()
+	req := httptest.NewRequest(http.MethodPost, "/api/polka/webhooks", bytes.NewReader([]byte(`{"event":"user.upgraded","data":{"user_id":"`+userID.String()+`"}}`)))
+	resp := httptest.NewRecorder()
+
+	mock.ExpectQuery(regexp.QuoteMeta(`-- name: UpgradeUserToChirpyRed :one
+UPDATE users
+SET is_chirpy_red = TRUE,
+    updated_at = NOW()
+WHERE id = $1
+RETURNING id, created_at, updated_at, email, hashed_password, is_chirpy_red
+`)).
+		WithArgs(userID).
+		WillReturnError(sql.ErrNoRows)
+
+	config.handlerPolkaWebhooks(resp, req)
+
+	if resp.Code != http.StatusNotFound {
+		t.Fatalf("expected status %d, got %d", http.StatusNotFound, resp.Code)
+	}
+
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatalf("unmet sql expectations: %v", err)
 	}
 }
